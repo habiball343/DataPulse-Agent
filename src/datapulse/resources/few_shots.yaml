@@ -1,0 +1,147 @@
+# “业务问题 - 标准 SQL”示例库
+# 运行时按问题相似度检索 Top-K 条注入提示词（动态 Few-Shot），
+# 让模型照着本项目的口径和写法生成 SQL。新增业务场景时，优先在这里补示例。
+# 注意：评测集 eval/questions.yaml 中的问题不要放进这里，避免“漏题”。
+
+- question: 2026 年 9 月各线路的毛利是多少？按毛利从高到低排
+  sql: |
+    SELECT r.origin_city || '-' || r.dest_city AS "线路",
+           ROUND(SUM(w.freight_revenue - w.transport_cost), 2) AS "毛利(元)"
+    FROM waybills w
+    JOIN routes r ON r.route_id = w.route_id
+    WHERE strftime('%Y-%m', w.ship_date) = '2026-09'
+    GROUP BY r.route_id
+    ORDER BY "毛利(元)" DESC
+
+- question: 毛利率最低的 5 条线路是哪些？
+  sql: |
+    SELECT r.origin_city || '-' || r.dest_city AS "线路",
+           ROUND(SUM(w.freight_revenue), 2) AS "运费收入(元)",
+           ROUND(SUM(w.freight_revenue - w.transport_cost) * 100.0 / SUM(w.freight_revenue), 2) AS "毛利率(%)"
+    FROM waybills w
+    JOIN routes r ON r.route_id = w.route_id
+    GROUP BY r.route_id
+    ORDER BY "毛利率(%)" ASC
+    LIMIT 5
+
+- question: 自有车队和外协车队的准点率对比
+  sql: |
+    SELECT v.fleet AS "车队",
+           COUNT(*) AS "签收票数",
+           ROUND(SUM(CASE WHEN w.actual_arrival_time <= w.plan_arrival_time THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS "准点率(%)"
+    FROM waybills w
+    JOIN vehicles v ON v.vehicle_id = w.vehicle_id
+    WHERE w.status = '已签收'
+    GROUP BY v.fleet
+
+- question: 每个月的运单量和运费收入趋势
+  sql: |
+    SELECT strftime('%Y-%m', ship_date) AS "月份",
+           COUNT(*) AS "运单数",
+           ROUND(SUM(freight_revenue), 2) AS "运费收入(元)"
+    FROM waybills
+    GROUP BY "月份"
+    ORDER BY "月份"
+
+- question: 目前还有欠款的客户和欠款金额
+  sql: |
+    SELECT c.customer_name AS "客户",
+           ROUND(SUM(b.amount_due - b.amount_paid), 2) AS "欠款(元)"
+    FROM monthly_bills b
+    JOIN customers c ON c.customer_id = b.customer_id
+    WHERE b.status != '已结清'
+    GROUP BY c.customer_id
+    ORDER BY "欠款(元)" DESC
+
+- question: 各类异常的次数和理赔总额
+  sql: |
+    SELECT exception_type AS "异常类型",
+           COUNT(*) AS "次数",
+           ROUND(SUM(claim_amount), 2) AS "理赔金额(元)"
+    FROM exceptions
+    GROUP BY exception_type
+    ORDER BY "理赔金额(元)" DESC
+
+- question: 发货量最大的前 10 个客户（按计费重量）
+  sql: |
+    SELECT c.customer_name AS "客户",
+           ROUND(SUM(w.charge_weight_kg) / 1000, 2) AS "货量(吨)",
+           COUNT(*) AS "运单数"
+    FROM waybills w
+    JOIN customers c ON c.customer_id = w.customer_id
+    GROUP BY c.customer_id
+    ORDER BY "货量(吨)" DESC
+    LIMIT 10
+
+- question: 不同车型的平均单票运输成本
+  sql: |
+    SELECT v.vehicle_type AS "车型",
+           ROUND(AVG(w.transport_cost), 2) AS "平均单票成本(元)"
+    FROM waybills w
+    JOIN vehicles v ON v.vehicle_id = w.vehicle_id
+    GROUP BY v.vehicle_type
+    ORDER BY "平均单票成本(元)" DESC
+
+- question: 各行业客户的运费收入占比
+  sql: |
+    SELECT c.industry AS "行业",
+           ROUND(SUM(w.freight_revenue), 2) AS "运费收入(元)",
+           ROUND(SUM(w.freight_revenue) * 100.0 / (SELECT SUM(freight_revenue) FROM waybills), 2) AS "占比(%)"
+    FROM waybills w
+    JOIN customers c ON c.customer_id = w.customer_id
+    GROUP BY c.industry
+    ORDER BY "运费收入(元)" DESC
+
+- question: 2026 年 10 月各客户的账单回款情况
+  sql: |
+    SELECT c.customer_name AS "客户",
+           b.amount_due AS "应收(元)",
+           b.amount_paid AS "已回款(元)",
+           b.status AS "状态"
+    FROM monthly_bills b
+    JOIN customers c ON c.customer_id = b.customer_id
+    WHERE b.bill_month = '2026-10'
+    ORDER BY b.amount_due DESC
+
+- question: 广州出发的线路每月毛利率变化
+  sql: |
+    SELECT strftime('%Y-%m', w.ship_date) AS "月份",
+           ROUND(SUM(w.freight_revenue - w.transport_cost) * 100.0 / SUM(w.freight_revenue), 2) AS "毛利率(%)"
+    FROM waybills w
+    JOIN routes r ON r.route_id = w.route_id
+    WHERE r.origin_city = '广州'
+    GROUP BY "月份"
+    ORDER BY "月份"
+
+- question: 平均延误时长最长的目的城市（只看延误的运单）
+  sql: |
+    SELECT r.dest_city AS "目的城市",
+           COUNT(*) AS "延误票数",
+           ROUND(AVG((julianday(w.actual_arrival_time) - julianday(w.plan_arrival_time)) * 24), 2) AS "平均延误(小时)"
+    FROM waybills w
+    JOIN routes r ON r.route_id = w.route_id
+    WHERE w.actual_arrival_time > w.plan_arrival_time
+    GROUP BY r.dest_city
+    ORDER BY "平均延误(小时)" DESC
+
+- question: 当前在途的运单有哪些
+  sql: |
+    SELECT w.waybill_id AS "运单号",
+           c.customer_name AS "客户",
+           r.origin_city || '-' || r.dest_city AS "线路",
+           w.ship_date AS "发车时间",
+           w.plan_arrival_time AS "计划到达"
+    FROM waybills w
+    JOIN customers c ON c.customer_id = w.customer_id
+    JOIN routes r ON r.route_id = w.route_id
+    WHERE w.status = '在途'
+    ORDER BY w.plan_arrival_time
+
+- question: 整车和零担专线的单票平均收入对比
+  sql: |
+    SELECT r.line_type AS "线路类型",
+           COUNT(*) AS "运单数",
+           ROUND(AVG(w.freight_revenue), 2) AS "单票平均收入(元)"
+    FROM waybills w
+    JOIN routes r ON r.route_id = w.route_id
+    GROUP BY r.line_type

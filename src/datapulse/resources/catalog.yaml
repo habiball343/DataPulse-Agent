@@ -1,0 +1,116 @@
+# 数据目录（语义层）
+# 数据库本身只有英文表名列名，模型很难仅凭字段名理解业务含义。
+# 这里为每张表、每个字段补充中文说明和同义词，并定义常用指标的计算口径。
+# Schema Linking 会把这些描述向量化入库，按用户问题检索出最相关的表、字段和指标；
+# aliases 是表的业务别名，用于关键词精确匹配。
+
+tables:
+  customers:
+    description: 货主客户档案（发货的制造业企业），一行一个客户
+    aliases: 客户、货主、发货方
+    columns:
+      customer_id: 客户编号，主键
+      customer_name: 客户名称、货主名称、公司名
+      industry: 客户所属行业（家电 / 家具 / 陶瓷 / 五金 / 电子 / 服装）
+      city: 客户所在区县（顺德、南海、东莞等）
+      settlement_type: 结算方式（月结 / 现结），月结客户才会出现在月结账单里
+      credit_limit: 信用额度、授信额度（元）
+
+  routes:
+    description: 干线运输线路，一行一条线路（始发城市 → 目的城市）
+    aliases: 线路、专线、方向、流向
+    columns:
+      route_id: 线路编号，主键
+      origin_city: 始发城市、出发地、发货城市
+      dest_city: 目的城市、到达城市、收货城市
+      line_type: 线路类型（零担专线 / 整车）
+      distance_km: 线路里程、运输距离（公里）
+
+  vehicles:
+    description: 承运车辆档案，一行一辆车，区分自有车队与外协车队
+    aliases: 车辆、车队、车型、车牌
+    columns:
+      vehicle_id: 车辆编号，主键
+      plate_no: 车牌号
+      vehicle_type: 车型（4.2米厢车 / 9.6米厢车 / 13米高栏 / 17.5米平板）
+      fleet: 所属车队（自有车队 / 外协车队），外协即外包、承包商车辆
+
+  waybills:
+    description: 运单明细（核心事实表），一行一票货，包含收入、成本、时效等信息
+    aliases: 运单、订单、发货、票数
+    columns:
+      waybill_id: 运单号，主键
+      customer_id: 发货客户编号，关联 customers
+      route_id: 线路编号，关联 routes
+      vehicle_id: 承运车辆编号，关联 vehicles
+      ship_date: 发货时间、发车时间、下单日期（格式 YYYY-MM-DD HH:MM:SS），按月统计用 strftime('%Y-%m', ship_date)
+      plan_arrival_time: 计划到达时间、承诺时效
+      actual_arrival_time: 实际到达时间、签收时间；在途运单为空
+      weight_kg: 实际重量、实重（公斤）
+      volume_m3: 货物体积（立方米、方）
+      charge_weight_kg: 计费重量（公斤）= max(实重, 体积 × 250)，轻抛货按体积重计费
+      freight_revenue: 运费收入、运费、营收、收入、销售额（元）
+      transport_cost: 运输成本、成本、车费、承运成本（元）
+      status: 运单状态（已签收 / 在途 / 异常）
+
+  exceptions:
+    description: 运输异常与理赔记录，一行一次异常上报
+    aliases: 异常、理赔、货损、丢件、赔付
+    columns:
+      exception_id: 异常编号，主键
+      waybill_id: 关联的运单号，关联 waybills
+      exception_type: 异常类型（货损 / 延误 / 丢件 / 错发）
+      report_date: 异常上报日期（YYYY-MM-DD）
+      claim_amount: 理赔金额、赔付金额、索赔金额（元）
+      status: 处理状态（处理中 / 已结案）
+
+  monthly_bills:
+    description: 月结客户的月度对账单，一行一个客户一个月，用于应收账款与回款分析
+    aliases: 账单、对账、回款、应收、欠款、月结
+    columns:
+      bill_id: 账单编号，主键
+      customer_id: 客户编号，关联 customers
+      bill_month: 账单月份（YYYY-MM）
+      amount_due: 应收金额、账单金额（元）
+      amount_paid: 已回款金额、实收金额（元）
+      due_date: 账单到期日、最晚付款日（YYYY-MM-DD）
+      status: 结算状态（已结清 / 部分回款 / 未回款）
+
+# 指标口径：模型最容易“自由发挥”的地方，统一在这里定义
+metrics:
+  - name: 毛利
+    synonyms: 利润、毛利额、赚了多少钱
+    definition: SUM(waybills.freight_revenue - waybills.transport_cost)
+    tables: [waybills]
+  - name: 毛利率
+    synonyms: 利润率、毛利占比
+    definition: SUM(freight_revenue - transport_cost) * 100.0 / SUM(freight_revenue)，结果以百分比表示
+    tables: [waybills]
+  - name: 准点率
+    synonyms: 准时率、按时到达率、时效达成率、延误率（= 100 - 准点率）
+    definition: 只统计 status = '已签收' 的运单，actual_arrival_time <= plan_arrival_time 的票数占比，SUM(CASE WHEN actual_arrival_time <= plan_arrival_time THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+    tables: [waybills, vehicles]
+  - name: 单量
+    synonyms: 票数、运单数、发货量、订单量
+    definition: COUNT(waybills.waybill_id)
+    tables: [waybills]
+  - name: 货量
+    synonyms: 发货重量、吨位
+    definition: SUM(waybills.charge_weight_kg) / 1000，单位吨
+    tables: [waybills]
+  - name: 欠款
+    synonyms: 应收未收、未回款金额、应收账款余额
+    definition: SUM(monthly_bills.amount_due - monthly_bills.amount_paid)
+    tables: [monthly_bills, customers]
+  - name: 回款率
+    synonyms: 收款率、回款比例
+    definition: SUM(amount_paid) * 100.0 / SUM(amount_due)
+    tables: [monthly_bills]
+  - name: 逾期账单
+    synonyms: 超期未付、逾期应收
+    definition: due_date < 数据最新日期 且 status != '已结清' 的账单
+    tables: [monthly_bills, customers]
+  - name: 理赔率
+    synonyms: 异常率、货损率
+    definition: 发生异常的运单数 * 100.0 / 运单总数，异常运单通过 exceptions.waybill_id 关联
+    tables: [exceptions, waybills]
