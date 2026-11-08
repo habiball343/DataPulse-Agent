@@ -1,0 +1,134 @@
+# Text-to-SQL 离线评测集
+# 每条包含业务问题和人工核对过的标准 SQL（gold）。评测时执行 Agent 生成的 SQL 和 gold SQL，比较结果是否一致。
+# 这些问题刻意不与 few_shots.yaml 重复，用来检验泛化能力而不是“背答案”。
+# tags 用于分类统计：单表 / 多表 / 指标口径 / 相对时间 / 子查询 等。
+
+- id: q01
+  question: 2026 年 10 月整体的毛利率是多少？
+  tags: [单表, 指标口径]
+  gold: |
+    SELECT ROUND(SUM(freight_revenue - transport_cost) * 100.0 / SUM(freight_revenue), 2)
+    FROM waybills WHERE strftime('%Y-%m', ship_date) = '2026-10'
+
+- id: q02
+  question: 上个月外协车队的准点率
+  tags: [多表, 指标口径, 相对时间]
+  gold: |
+    SELECT ROUND(SUM(CASE WHEN w.actual_arrival_time <= w.plan_arrival_time THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+    FROM waybills w JOIN vehicles v ON v.vehicle_id = w.vehicle_id
+    WHERE v.fleet = '外协车队' AND w.status = '已签收' AND strftime('%Y-%m', w.ship_date) = '2026-09'
+
+- id: q03
+  question: 欠款金额超过 5 万元的客户有哪些？列出客户名称和欠款
+  tags: [多表, 指标口径, HAVING]
+  gold: |
+    SELECT c.customer_name, ROUND(SUM(b.amount_due - b.amount_paid), 2) AS debt
+    FROM monthly_bills b JOIN customers c ON c.customer_id = b.customer_id
+    GROUP BY c.customer_id HAVING SUM(b.amount_due - b.amount_paid) > 50000
+
+- id: q04
+  question: 佛山出发的线路都去往哪些城市？
+  tags: [单表]
+  gold: |
+    SELECT dest_city FROM routes WHERE origin_city = '佛山'
+
+- id: q05
+  question: 9.6米厢车今年一共承运了多少票货？
+  tags: [多表, 枚举值]
+  gold: |
+    SELECT COUNT(*) FROM waybills w JOIN vehicles v ON v.vehicle_id = w.vehicle_id
+    WHERE v.vehicle_type = '9.6米厢车' AND strftime('%Y', w.ship_date) = '2026'
+
+- id: q06
+  question: 每个月货损类异常的理赔金额
+  tags: [单表, 枚举值, 时间分组]
+  gold: |
+    SELECT strftime('%Y-%m', report_date) AS m, ROUND(SUM(claim_amount), 2)
+    FROM exceptions WHERE exception_type = '货损' GROUP BY m ORDER BY m
+
+- id: q07
+  question: 贡献毛利最多的 3 个客户
+  tags: [多表, 指标口径, TopN]
+  gold: |
+    SELECT c.customer_name, ROUND(SUM(w.freight_revenue - w.transport_cost), 2) AS gp
+    FROM waybills w JOIN customers c ON c.customer_id = w.customer_id
+    GROUP BY c.customer_id ORDER BY gp DESC LIMIT 3
+
+- id: q08
+  question: 陶瓷行业客户的运费收入合计是多少？
+  tags: [多表, 枚举值]
+  gold: |
+    SELECT ROUND(SUM(w.freight_revenue), 2)
+    FROM waybills w JOIN customers c ON c.customer_id = w.customer_id WHERE c.industry = '陶瓷'
+
+- id: q09
+  question: 整车线路和零担专线的毛利率分别是多少？
+  tags: [多表, 指标口径, 枚举值]
+  gold: |
+    SELECT r.line_type, ROUND(SUM(w.freight_revenue - w.transport_cost) * 100.0 / SUM(w.freight_revenue), 2)
+    FROM waybills w JOIN routes r ON r.route_id = w.route_id GROUP BY r.line_type
+
+- id: q10
+  question: 准点率最低的 3 个目的城市
+  tags: [多表, 指标口径, TopN]
+  gold: |
+    SELECT r.dest_city,
+           ROUND(SUM(CASE WHEN w.actual_arrival_time <= w.plan_arrival_time THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS rate
+    FROM waybills w JOIN routes r ON r.route_id = w.route_id
+    WHERE w.status = '已签收' GROUP BY r.dest_city ORDER BY rate ASC LIMIT 3
+
+- id: q11
+  question: 2026 年第三季度一共发了多少票货？
+  tags: [单表, 时间范围]
+  gold: |
+    SELECT COUNT(*) FROM waybills WHERE strftime('%Y-%m', ship_date) BETWEEN '2026-07' AND '2026-09'
+
+- id: q12
+  question: 每个账单月份的回款率
+  tags: [单表, 指标口径, 时间分组]
+  gold: |
+    SELECT bill_month, ROUND(SUM(amount_paid) * 100.0 / SUM(amount_due), 2)
+    FROM monthly_bills GROUP BY bill_month ORDER BY bill_month
+
+- id: q13
+  question: 哪个行业的客户平均每票计费重量最大？
+  tags: [多表, Top1]
+  gold: |
+    SELECT c.industry, ROUND(AVG(w.charge_weight_kg), 2) AS avg_w
+    FROM waybills w JOIN customers c ON c.customer_id = w.customer_id
+    GROUP BY c.industry ORDER BY avg_w DESC LIMIT 1
+
+- id: q14
+  question: 还在处理中的理赔有多少笔，涉及金额多少？
+  tags: [单表, 枚举值]
+  gold: |
+    SELECT COUNT(*), ROUND(SUM(claim_amount), 2) FROM exceptions WHERE status = '处理中'
+
+- id: q15
+  question: 自有车队和外协车队的单票平均毛利
+  tags: [多表, 指标口径]
+  gold: |
+    SELECT v.fleet, ROUND(AVG(w.freight_revenue - w.transport_cost), 2)
+    FROM waybills w JOIN vehicles v ON v.vehicle_id = w.vehicle_id GROUP BY v.fleet
+
+- id: q16
+  question: 按体积计费的轻抛货运单占全部运单的比例
+  tags: [单表, 业务理解]
+  gold: |
+    SELECT ROUND(SUM(CASE WHEN charge_weight_kg > weight_kg THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) FROM waybills
+
+- id: q17
+  question: 运费收入高于全部线路平均水平的线路有哪些？
+  tags: [多表, 子查询]
+  gold: |
+    WITH t AS (
+      SELECT r.origin_city || '-' || r.dest_city AS route, SUM(w.freight_revenue) AS rev
+      FROM waybills w JOIN routes r ON r.route_id = w.route_id GROUP BY r.route_id
+    )
+    SELECT route, ROUND(rev, 2) FROM t WHERE rev > (SELECT AVG(rev) FROM t)
+
+- id: q18
+  question: 已经过了到期日但还没结清的账单有多少张？
+  tags: [单表, 指标口径, 相对时间]
+  gold: |
+    SELECT COUNT(*) FROM monthly_bills WHERE due_date < '2026-10-30' AND status != '已结清'
